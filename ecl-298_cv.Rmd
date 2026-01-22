@@ -1,0 +1,62 @@
+---
+title: "ECL_298_cv"
+author: "Yuri Victor Calvo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Packages and DF
+
+```{r}
+library(dplyr)
+library(predicts)
+df <- datasets::penguins
+
+df <- drop_na(df)
+```
+
+# 5 fold CV
+
+```{r}
+set.seed(1234)
+nk <- 5
+sep <- folds(df,k=nk)
+df$k <- sep
+
+train <- df[sep==1,]
+```
+
+# Regression
+
+```{r}
+
+mod1 <- lm(body_mass~bill_dep,data=train)
+mod2 <- lm(body_mass~bill_dep+bill_len,data=train)
+mod3 <- lm(body_mass~bill_dep+bill_len+flipper_len,data=train)
+mod4 <- lm(body_mass~bill_dep+bill_len+sex+flipper_len,data=train)
+
+summary(mod1)
+summary(mod2)
+summary(mod3)
+summary(mod4) # best performing 
+```
+
+```{r}
+### acceptance margin of error
+margin <- 0.10
+
+fit <- rep(NA,nk)
+for (a in 1:nk){
+  sub_test <- subset(df,k==a)
+  sub_train <- subset(df,k!=a)
+  mod <- lm(body_mass~bill_dep+bill_len+sex+flipper_len,data=sub_train)
+  pred <- predict(mod,sub_test)
+  obs <- sub_test$body_mass
+  diff=pmax(obs,pred)-pmin(obs,pred)
+  error=abs(obs-pred)/pred
+  out <- mean(error<=margin)
+  fit[a] <- out
+}
+fit
+
+```
