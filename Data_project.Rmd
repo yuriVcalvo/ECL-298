@@ -1,0 +1,194 @@
+---
+title: "ECL-298"
+author: "Yuri Victor Calvo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Packages
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(maps)
+
+```
+
+# Df Import
+
+The `farms` Dataset was provided by the California Department of Fishery and Agriculture, it contains information from all poultry farms tested for HPAI from 2022 until February of 2025.
+
+Relevant variables for the project:
+
+-   ID
+
+-   Diagnosis: positive or negative for HPAI
+
+-   start_date: Date in which the farm was tested
+
+-   species_gp: What animal species was tested.
+
+The `df` Dataset, was obtained with Google Earth Engine (GEE), from the GridMET projections. It contains Weather information of all poultry farms from the farms dataset, 14 prior and during the day they were tested. The information refers to a 2km buffer along the farm.
+
+Relevant variables for the project:
+
+-   temp_mean: Mean temperature for the day
+
+-   rh_mean: mean Relative Humidity for the day
+
+-   cpr: accumulated preciptation
+
+-   ref: day reference; 0=test date
+
+-   wave: outbreak wave
+
+-   county: county where the farm is located
+
+```{r}
+pathF<- "C:/Users/yuriv/Box/MPVM (Yuri Calvo)/Spring 2025/MPM 204/Farms_County.csv"
+farms <- read_csv(pathF)
+farms <- clean_names(farms)
+farms <- farms %>% 
+  filter(species_gr %in% c("Chicken","A - Select Species Group","Poultry"))
+farms$month <- ymd(paste(year(farms$date),month(farms$date),'01',sep="-"))
+path <- "C:/Users/yuriv/Box/MPVM (Yuri Calvo)/Final Project/Data/DBs/treated/GRIDMET/2-2_weeks_col_treat/GRIDMET_10km_treat.csv"
+
+tests_dates <- farms %>% dplyr::select(project_id,start_date)
+
+df <- read_csv(path)
+df <- clean_names(df)
+df <- df %>% 
+  filter(ref<=0 & id %in% farms$project_id) %>% 
+  mutate(ref=ref*(-1)) 
+
+
+farms$id <- farms$project_id
+
+df <- left_join(df,farms,by="id")
+
+df$diag <- ifelse(df$diagnosis=="Positive",1,0)
+df$waves <- as.factor(df$waves)
+df <- df %>% 
+  dplyr::select(id,date.x,ref,cpr,rh_mean,temp_mean,diag,name,waves,latitude,longitude)
+
+colnames(df) <- c("id",'date','ref','cpr','rh_mean','temp_mean','diag','county','waves','lat','long')
+#######
+
+rm(path,pathF)
+
+
+
+### Aphis interim report on HPAI indicates that on average birds cross locations of HPAI 7 days prior of detecting the virus. 
+
+df2 <- subset(df,ref>=7 & ref<=14)
+
+```
+
+## Spatio-Temporal Distribution
+
+The plot below, indicates a clear seasonality in the cases of HPAi in California, with outbreaks ceasing during summer. The seasonality of HPAI is widely studied, and attributed to birds migration routes, as well and weather conditions that affect where they land.
+
+```{r}
+posi <- farms %>% 
+  filter(diagnosis=="Positive") %>% 
+  group_by(month) %>% 
+  summarise(count=n(),waves=unique(waves))
+  
+farms %>% 
+    group_by(waves,diagnosis) %>% 
+    summarise(n=n())
+  
+
+ggplot(posi,aes(x=month,y=count))+
+  geom_bar(mapping=aes(fill=as.factor(waves)),stat="identity")+
+  scale_x_date(date_breaks="3 months",date_labels = "%m/%Y")+
+  labs(title = "Farms positive for HPAI in California from 2022-2025",
+       x="Date",
+       y="Count",
+       fill="Outbreak Waves")+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+  
+```
+
+Similarly to the wave distribution, there is also a spatial effect present in the cases as well. By observing the map below we can see that the distribution of cases across the state is very uneven between counties.
+
+```{r}
+CA <- map_data('county','california')
+
+ggplot()+
+  geom_map(CA,map = CA,mapping=aes(,map_id=region),colour="black",fill="white")+
+  geom_point(subset(df,diag==1 & ref==0),mapping=aes(x=long,y=lat,colour=waves),size=1,position =position_jitter(0.05,0.1))+
+  expand_limits(x=CA$long,y=CA$lat)+
+  theme_bw()+
+  labs(title="HPAI cases in California")
+```
+
+# Covariates analysis
+
+Overall, the plots show a peak in the difference of values between cases and control around 10 days prior of infection, which is in accordance to literature findings, that estimate a median time of 6 days between virus introduction in a farm and the first positive test in the flock.
+
+```{r}
+ggplot(df2,aes(x=ref,y=rh_mean,colour=as.factor(diag)))+
+  stat_summary(fun="mean",geom="line")+
+  labs(title="Mean Relative Humidity per day",
+       x="Day prior to infection",
+       colour="diagnosis")
+
+ggplot(df2,aes(x=ref,y=temp_mean,colour=as.factor(diag)))+
+  stat_summary(fun="mean",geom="line")+
+  labs(title="Mean Temperature per day",
+       x="Day prior to infection",
+       colour="diagnosis")
+
+ggplot(df2,aes(x=ref,y=cpr,colour=as.factor(diag)))+
+  stat_summary(fun="mean",geom="line")+
+  labs(title="Mean cumulative preciptation per day",
+       x="Day prior to infection",
+       colour="diagnosis")
+
+
+  
+```
+
+Overall, the distribtuion of relative Humidity (RH) and Temperature (temp) are approximately normal.
+
+However, cumulative preciptation (cpr) is very right skewed. with a large amount of zeros and small very large values. This is due to lack of rain in the locations during most of the days.
+
+Due to that, log transforming directly was not possible, and would result in a lost of almost 70% of the observations. Therefore an attempt to log transform by approximating 0 values to 1 was made. But it still resulted in right skewed data.
+
+```{r}
+ggplot(df2,aes(y=rh_mean))+
+  geom_boxplot()+
+  labs(title="RH")
+
+ggplot(df2,aes(y=temp_mean))+
+  geom_boxplot()+
+  labs(title="Temp")
+ggplot(df2,aes(y=cpr))+
+  geom_boxplot()+ ### cpr is very right sekwed. 
+  labs(title="CPR")
+ggplot(df2,aes(y=log1p(cpr)))+
+  geom_boxplot()+ ### cpr is very right sekwed even with log transformation. 
+  labs(title="Log CPR")
+
+```
+
+## CPR transformation
+
+To sort this issue, the CPR vairable was divided into 2:
+
+`precip`: A binary variable indicating weather or not there was rain in the day.
+
+`cprY`: A continuous variable, with logtransformed values for CPR in case it rained in the day. In case there was no rain, they recieve a `0` value
+
+This intended to transform the data into an approximately normal distribution, without loosing data. Altought it has a cost of 1 extra variable in the model, overall is more beneficial than loosing all the variables or not use the covariate.
+
+```{r}
+df2$precip <-ifelse(df2$cpr>0,1,0) 
+df2$cprY <- ifelse(df2$cpr>0,log(df2$cpr),0)
+
+ggplot(subset(df2,cprY!=0),aes(x=cprY))+
+  geom_boxplot()+ ### better
+  labs(title="CPRY")
+```
