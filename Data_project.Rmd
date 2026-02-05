@@ -7,11 +7,12 @@ output: html_document
 
 # Packages
 
-```{r}
+```{r include=F}
 library(tidyverse)
 library(janitor)
 library(maps)
-
+library(randomForest)
+library(pROC)
 ```
 
 # Df Import
@@ -44,7 +45,7 @@ Relevant variables for the project:
 
 -   county: county where the farm is located
 
-```{r}
+```{r include=F}
 pathF<- "C:/Users/yuriv/Box/MPVM (Yuri Calvo)/Spring 2025/MPM 204/Farms_County.csv"
 farms <- read_csv(pathF)
 farms <- clean_names(farms)
@@ -120,7 +121,6 @@ ggplot()+
   geom_map(CA,map = CA,mapping=aes(,map_id=region),colour="black",fill="white")+
   geom_point(subset(df,diag==1 & ref==0),mapping=aes(x=long,y=lat,colour=waves),size=1,position =position_jitter(0.05,0.1))+
   expand_limits(x=CA$long,y=CA$lat)+
-  theme_bw()+
   labs(title="HPAI cases in California")
 ```
 
@@ -191,4 +191,38 @@ df2$cprY <- ifelse(df2$cpr>0,log(df2$cpr),0)
 ggplot(subset(df2,cprY!=0),aes(x=cprY))+
   geom_boxplot()+ ### better
   labs(title="CPRY")
+```
+
+# Random Forest
+
+The random forest indicates that out of preciptation, relative humidity and temperature, temperature is the most important variable, followed by rh and cpr.
+
+Is worth noting that this is an analysis made from the mean values from from the period of time to avoid inflated values.
+
+```{r}
+sub <- df2 %>% 
+  group_by(id,diag) %>% 
+  summarise(t=mean(temp_mean),rh=mean(rh_mean),cpr=mean(cpr),.groups = "drop") %>% 
+  select(-id) %>% 
+  mutate(diag=as.factor(diag))
+m <- randomForest(diag~.,data=sub)
+varImpPlot(m)
+
+```
+
+## Prediction
+
+This is the result of the random forest analysis when compared to the actual data.
+
+Quite impressive results, Likely influenced by the imbalance between negative and positive cases.
+
+The ROC curve also indicates some potential issue with the data.
+
+Another potential source, that needs to be checked is the cpr variable. Its right skewed and extremely zero inflated, so it can negatively affect the observed values.
+
+```{r}
+pred <- predict(m,sub)
+table(pred,sub$diag)
+r <- roc(pred,as.numeric(sub$diag))
+plot(r)
 ```
