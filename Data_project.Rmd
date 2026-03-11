@@ -70,18 +70,14 @@ df <- left_join(df,farms,by="id")
 df$diag <- ifelse(df$diagnosis=="Positive",1,0)
 df$waves <- as.factor(df$waves)
 df <- df %>% 
-  dplyr::select(id,date.x,ref,cpr,rh_mean,temp_mean,diag,name,waves,latitude,longitude)
+  dplyr::select(id,date.x,ref,cpr,rh_mean,temp_mean,diag,name,waves,latitude,longitude) %>% 
+  filter(ref>=3)
 
 colnames(df) <- c("id",'date','ref','cpr','rh_mean','temp_mean','diag','county','waves','lat','long')
 #######
 
 rm(path,pathF)
 
-
-
-### Aphis interim report on HPAI indicates that on average birds cross locations of HPAI 7 days prior of detecting the virus. 
-
-df2 <- subset(df,ref>=7 & ref<=14)
 
 ```
 
@@ -119,95 +115,49 @@ CA <- map_data('county','california')
 
 ggplot()+
   geom_map(CA,map = CA,mapping=aes(,map_id=region),colour="black",fill="white")+
-  geom_point(subset(df,diag==1 & ref==0),mapping=aes(x=long,y=lat,colour=waves),size=1,position =position_jitter(0.05,0.1))+
+  geom_point(subset(df,diag==1 & ref==3),mapping=aes(x=long,y=lat,colour=waves),size=1,position =position_jitter(0.05,0.1))+
   expand_limits(x=CA$long,y=CA$lat)+
   labs(title="HPAI cases in California")
 ```
 
-# Covariates analysis
-
-Overall, the plots show a peak in the difference of values between cases and control around 10 days prior of infection, which is in accordance to literature findings, that estimate a median time of 6 days between virus introduction in a farm and the first positive test in the flock.
+# Data prep
 
 ```{r}
-ggplot(df2,aes(x=ref,y=rh_mean,colour=as.factor(diag)))+
-  stat_summary(fun="mean",geom="line")+
-  labs(title="Mean Relative Humidity per day",
-       x="Day prior to infection",
-       colour="diagnosis")
-
-ggplot(df2,aes(x=ref,y=temp_mean,colour=as.factor(diag)))+
-  stat_summary(fun="mean",geom="line")+
-  labs(title="Mean Temperature per day",
-       x="Day prior to infection",
-       colour="diagnosis")
-
-ggplot(df2,aes(x=ref,y=cpr,colour=as.factor(diag)))+
-  stat_summary(fun="mean",geom="line")+
-  labs(title="Mean cumulative preciptation per day",
-       x="Day prior to infection",
-       colour="diagnosis")
+df_3d <- df %>% 
+  mutate(dg=case_when(
+      ref <= 5  ~ "5_7",
+      ref <= 10  ~ "8_10",
+      ref <= 12 ~ "10_12",
+      ref <= 15 ~ "13_14")) %>% 
+  group_by(id,dg,diag,waves) %>%
+  summarise(temp=mean(temp_mean),rh=mean(rh_mean),cpr=mean(cpr),.groups = "drop") %>% 
+  pivot_wider(id_cols = c(id,diag,waves),names_from = dg,values_from = c(temp,rh,cpr),names_glue ="{.value}_{dg}")
 
 
-  
-```
 
-Overall, the distribtuion of relative Humidity (RH) and Temperature (temp) are approximately normal.
-
-However, cumulative preciptation (cpr) is very right skewed. with a large amount of zeros and small very large values. This is due to lack of rain in the locations during most of the days.
-
-Due to that, log transforming directly was not possible, and would result in a lost of almost 70% of the observations. Therefore an attempt to log transform by approximating 0 values to 1 was made. But it still resulted in right skewed data.
-
-```{r}
-ggplot(df2,aes(y=rh_mean))+
-  geom_boxplot()+
-  labs(title="RH")
-
-ggplot(df2,aes(y=temp_mean))+
-  geom_boxplot()+
-  labs(title="Temp")
-ggplot(df2,aes(y=cpr))+
-  geom_boxplot()+ ### cpr is very right sekwed. 
-  labs(title="CPR")
-ggplot(df2,aes(y=log1p(cpr)))+
-  geom_boxplot()+ ### cpr is very right sekwed even with log transformation. 
-  labs(title="Log CPR")
 
 ```
 
-## CPR transformation
-
-To sort this issue, the CPR vairable was divided into 2:
-
-`precip`: A binary variable indicating weather or not there was rain in the day.
-
-`cprY`: A continuous variable, with logtransformed values for CPR in case it rained in the day. In case there was no rain, they recieve a `0` value
-
-This intended to transform the data into an approximately normal distribution, without loosing data. Altought it has a cost of 1 extra variable in the model, overall is more beneficial than loosing all the variables or not use the covariate.
+# Cross Validation
 
 ```{r}
-df2$precip <-ifelse(df2$cpr>0,1,0) 
-df2$cprY <- ifelse(df2$cpr>0,log(df2$cpr),0)
-
-ggplot(subset(df2,cprY!=0),aes(x=cprY))+
-  geom_boxplot()+ ### better
-  labs(title="CPRY")
+n=floor(NROW(df_3d)/3)
+i=sample(NROW(df_3d),n)
+train <- df_3d[i,]
+test <- df_3d[-i,]
 ```
 
-# Random Forest
+# Random Forests
 
 The random forest indicates that out of preciptation, relative humidity and temperature, temperature is the most important variable, followed by rh and cpr.
 
 Is worth noting that this is an analysis made from the mean values from from the period of time to avoid inflated values.
 
-```{r}
-sub <- df2 %>% 
-  group_by(id,diag) %>% 
-  summarise(t=mean(temp_mean),rh=mean(rh_mean),cpr=mean(cpr),.groups = "drop") %>% 
-  select(-id) %>% 
-  mutate(diag=as.factor(diag))
-m <- randomForest(diag~.,data=sub)
-varImpPlot(m)
+# 3 days ranges
 
+```{r}
+m <- randomForest(diag~.-waves-id,data=train,ntree=5000)
+varImpPlot(m,main="Importance Plot")
 ```
 
 ## Prediction
@@ -221,8 +171,48 @@ The ROC curve also indicates some potential issue with the data.
 Another potential source, that needs to be checked is the cpr variable. Its right skewed and extremely zero inflated, so it can negatively affect the observed values.
 
 ```{r}
-pred <- predict(m,sub)
-table(pred,sub$diag)
-r <- roc(pred,as.numeric(sub$diag))
-plot(r)
+pred_train <- as.numeric(predict(m,train))-1
+table(pred_train,train$diag)
+
+r <- roc(train$diag,pred_train, levels = c("0", "1"))
+
+plot.roc(r,legacy.axes = T,print.auc = T,main="Train Data")
+```
+
+```{r}
+pred_test<- as.numeric(predict(m,test))-1
+table(pred_test,test$diag)
+
+r <- roc(test$diag,pred_test)
+
+plot.roc(r,legacy.axes = T,print.auc = T,main="Test Data")
+
+```
+
+# GLM
+
+```{r}
+mod_rf <- glm(diag~temp_10_12+rh_13_14+cpr_10_12,data=train,family=binomial)
+summary(mod_rf)
+
+```
+
+```{r}
+pred_train_rf <-  predict(mod_rf,train,type = "response")
+
+rrf <- roc(train$diag,pred_train_rf)
+
+plot.roc(rrf,legacy.axes = T,print.auc = T,main="Train Data Most Important")
+
+```
+
+```{r}
+pred_test_rf <-  predict(mod_rf,test,type = "response")
+rrf <- roc(test$diag,pred_test_rf)
+
+plot.roc(rrf,legacy.axes = T,print.auc = T,main="Test Data Most Important")
+
+
+
+
 ```
